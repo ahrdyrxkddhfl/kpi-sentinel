@@ -1,6 +1,6 @@
 """
 Walking skeleton: 데이터 생성 -> 탐지 -> 시각화 관통 확인용.
-8/29에 sentinel/ 모듈로 재작성하면서 버릴 코드.
+이후 sentinel/ 모듈로 재작성하면서 버릴 코드.
 """
 import numpy as np
 import pandas as pd
