@@ -1,0 +1,14 @@
+# 스트림 접속 설정. 브로커를 쓰지 않을 경우 mode를 file로 바꾼다.
+mode: kafka          # kafka | file
+
+kafka:
+  bootstrap_servers: "localhost:9092"
+  topic: "kpi-raw"
+  group_id: "kpi-sentinel"
+
+file:
+  path: "data/raw/kpi.csv"
+
+# 실시간 재생 속도. 1분 간격 데이터를 몇 초 간격으로 흘려보낼지 정한다.
+# 0이면 지연 없이 최대 속도로 보낸다.
+replay_delay_sec: 0
