@@ -30,7 +30,7 @@
 
 KPI 7종 / 21일 / 1분 간격 / 이상 비율 4.12% / warmup 7일
 
-> 아래 수치는 `scripts/validate_simulator.py`로 재현 가능. (작성 예정)
+> 아래 수치는 `scripts/validate_simulator.py`로 재현 가능.
 
 ### 시나리오별 최대 이탈폭
 
