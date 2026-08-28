@@ -12,3 +12,6 @@ file:
 # 실시간 재생 속도. 1분 간격 데이터를 몇 초 간격으로 흘려보낼지 정한다.
 # 0이면 지연 없이 최대 속도로 보낸다.
 replay_delay_sec: 0
+
+# 탐지 단계가 읽을 윈도우 집계 결과. batch 또는 stream.
+windowed_source: batch

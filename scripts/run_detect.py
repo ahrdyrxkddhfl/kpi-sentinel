@@ -1,6 +1,8 @@
 """탐지 엔진을 실행해 알람을 생성한다.
 
 제안 방식과 비교 기준선을 함께 돌려 같은 조건에서 비교할 수 있게 한다.
+입력은 배치 집계와 스트림 집계 중 config에서 고른다. 두 경로의 출력이
+동일하므로 어느 쪽을 읽어도 결과가 같아야 한다.
 """
 
 import sys
@@ -18,12 +20,20 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     kpi_yaml = yaml.safe_load((ROOT / "config/kpi.yaml").read_text())
     det_yaml = yaml.safe_load((ROOT / "config/detector.yaml").read_text())
+    stream_cfg = yaml.safe_load((ROOT / "config/stream.yaml").read_text())
 
-    src = ROOT / "data/windowed/kpi.csv"
+    source = stream_cfg.get("windowed_source", "batch")
+    name = "kpi.csv" if source == "batch" else "kpi_stream.csv"
+    src = ROOT / "data/windowed" / name
     if not src.exists():
         print(f"윈도우 집계 결과가 없다: {src}")
-        print("먼저 scripts/run_window.py를 실행할 것.")
+        if source == "batch":
+            print("먼저 scripts/run_window.py를 실행할 것.")
+        else:
+            print("먼저 scripts/run_produce.py와 run_consume.py를 실행할 것.")
         return 1
+
+    print(f"입력: {name} ({source})")
 
     df = pd.read_csv(src)
     df["ts"] = pd.to_datetime(df["ts"])
@@ -51,7 +61,7 @@ def main():
     proposed.to_csv(out_dir / "proposed.csv", index=False)
     naive.to_csv(out_dir / "naive.csv", index=False)
 
-    print(f"학습 {len(train):,}행 / 평가 {len(test):,}행")
+    print(f"  학습 {len(train):,}행 / 평가 {len(test):,}행")
     print(f"  제안 방식  알람 {int(proposed.alert.sum()):,}건")
     print(f"  기준선     알람 {int(naive.alert.sum()):,}건")
     print(f"  -> {out_dir}")
