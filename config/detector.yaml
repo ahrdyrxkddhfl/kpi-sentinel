@@ -1,0 +1,28 @@
+# 탐지 엔진 설정.
+# 모든 임계값과 윈도우 크기는 여기에만 존재한다. 코드에 상수를 두지 않는다.
+
+window:
+  size_min: 5          # 슬라이딩 윈도우 크기 (분)
+  stride_min: 1        # 윈도우를 미는 간격 (분)
+  agg: mean            # mean | max | p95
+
+baseline:
+  # 요일타입 x 시간대 버킷으로 정상 통계를 학습한다.
+  # 요일을 빼면 주말과 평일의 트래픽 차이가 전부 이상으로 잡힌다.
+  bucket_minutes: 30
+  warmup_days: 7       # 이 구간만 학습에 사용한다. kpi.yaml의 값과 일치시킬 것.
+  min_samples: 5       # 버킷당 최소 표본 수. 미만이면 전역 통계로 대체한다.
+
+detector:
+  z_threshold: 3.0
+  ewma_alpha: 0.3      # 클수록 민감하고 노이즈에 약하다.
+  persistence: 3       # 연속 N회 위반 시에만 알람을 낸다.
+
+# 비교 기준선. 개선 효과를 측정할 대상이다.
+naive_baseline:
+  z_threshold: 3.0     # 전역 통계, 계절성 미반영, 지속성 규칙 없음
+
+evaluate:
+  # 이벤트 구간 안에서 알람이 1회 이상이면 탐지 성공으로 본다.
+  # 구간이 긴 시나리오를 point-wise로 채점하면 점수가 왜곡된다.
+  mode: event_wise
