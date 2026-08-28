@@ -116,6 +116,22 @@ def inject(series, kpi_cfg, event, ratio, rng):
     delta = sign * amp * _shape(event.scenario, length)
     series[event.start_idx:event.end_idx] += delta
 
+def _draw_count(count, rng):
+    """시나리오 발생 횟수를 결정한다.
+
+    정수면 그대로 쓰고, [lo, hi] 형태면 그 범위에서 뽑는다.
+    발생 빈도가 고정되면 장애가 드문 조건에서의 거동을 확인할 수 없다.
+
+    Args:
+        count: 정수 또는 [최소, 최대] 목록.
+        rng: numpy Generator.
+
+    Returns:
+        int.
+    """
+    if isinstance(count, (list, tuple)):
+        return int(rng.integers(count[0], count[1] + 1))
+    return int(count)
 
 def plan_events(n, scen_cfg, kpi_names, rng, min_gap, warmup):
     """시나리오 설정에 따라 이상 구간 배치를 계획한다.
@@ -124,6 +140,8 @@ def plan_events(n, scen_cfg, kpi_names, rng, min_gap, warmup):
     원인인지 평가 단계에서 구분할 수 없다.
     warmup 이전에는 아무것도 배치하지 않는다. baseline을 오염되지 않은
     구간에서 학습해야 하기 때문이다.
+    count가 범위로 주어지면 실행마다 발생 횟수가 달라진다.
+
 
     Args:
         n: 전체 샘플 수.
@@ -144,7 +162,7 @@ def plan_events(n, scen_cfg, kpi_names, rng, min_gap, warmup):
             continue
         lo, hi = cfg["duration_min"]
         weights = cfg["affects"]
-        for _ in range(cfg["count"]):
+        for _ in range(_draw_count(cfg["count"], rng)):
             for _attempt in range(500):
                 dur = int(rng.integers(lo, hi + 1))
                 start = int(rng.integers(warmup, n - dur))

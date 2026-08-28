@@ -15,8 +15,8 @@ baseline:
 
 detector:
   z_threshold: 3.0
-  ewma_alpha: 0.3      # 클수록 민감하고 노이즈에 약하다.
-  persistence: 3       # 연속 N회 위반 시에만 알람을 낸다.
+  ewma_alpha: 0.2      # 클수록 민감하고 노이즈에 약하다.
+  persistence: 5      # 연속 N회 위반 시에만 알람을 낸다.
 
 # 비교 기준선. 개선 효과를 측정할 대상이다.
 naive_baseline:

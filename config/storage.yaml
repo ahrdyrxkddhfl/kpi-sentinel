@@ -1,0 +1,10 @@
+# 저장소 설정.
+# 알람 이력을 SQL로 조회할 수 있게 한다. 리포트 생성 시
+# 특정 구간의 알람과 KPI 값을 질의로 뽑아 쓴다.
+
+duckdb:
+  path: "data/sentinel.duckdb"
+
+tables:
+  metrics: "metrics"      # 윈도우 집계된 KPI 시계열
+  alerts: "alerts"        # 알람 판정 결과

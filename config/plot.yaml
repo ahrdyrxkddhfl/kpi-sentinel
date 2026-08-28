@@ -1,0 +1,13 @@
+# 시각화 설정.
+output_dir: "docs/img"
+dpi: 130
+figsize: [14, 4]
+
+# 타임라인에 표시할 KPI. 너무 많으면 읽기 어려우므로 제한한다.
+timeline_kpis: [rtt_ms, prb_util_pct, link_util_pct]
+
+# 비교 그림에 사용할 구간. 지정한 시나리오의 이벤트 하나를 중심으로
+# 앞뒤 여유를 두고 잘라낸다.
+compare:
+  scenario: traffic_surge
+  margin_min: 180
