@@ -1,9 +1,10 @@
 """시뮬레이터가 생성한 데이터가 설계 의도대로인지 검증한다.
 
-탐지기 없이 데이터 자체만 본다. 여기서 확인하는 것은 세 가지다.
+여기서 확인하는 것은 네 가지다.
   1) baseline 학습 구간(warmup)에 이상이 섞이지 않았는가
   2) 정상 시나리오가 실제 장애보다 작게 튀는가
   3) 정상 트래픽 증가에서 부하 지표와 품질 지표가 분리되는가
+  4) 가장 단순한 탐지기 기준으로 난이도가 적절한가
 
 docs/results.md의 표를 이 스크립트로 재현한다.
 """
@@ -123,7 +124,7 @@ def check_clipping(df, kpi_cfg):
 
     판정하지 않고 보고만 한다. 소수의 포화는 정상이다.
     """
-    print("\n[4] clip 포화 (참고)")
+    print("\n[0] clip 포화 (참고)")
     total = 0
     for kpi, cfg in kpi_cfg.items():
         lo, hi = cfg["clip"]
@@ -133,6 +134,53 @@ def check_clipping(df, kpi_cfg):
             print(f"  {kpi:24s} 하한 {n_lo}건  상한 {n_hi}건")
             total += n_lo + n_hi
     print(f"  전체 {len(df):,}건 중 {total}건")
+
+
+def check_difficulty(df, warmup):
+    """계절성을 무시한 가장 단순한 탐지기의 성능을 측정한다.
+
+    이 값이 지나치게 높으면 시뮬레이터가 너무 쉬워 탐지 엔진의
+    개선 효과를 보일 수 없다. 지나치게 낮으면 어떤 방법으로도
+    탐지가 불가능하다는 뜻이다.
+
+    warmup 구간의 통계로 전역 z-score를 계산하고, 어느 KPI든
+    3σ를 넘으면 알람으로 본다. 지속성 규칙은 적용하지 않는다.
+
+    Args:
+        df: simulate가 반환한 DataFrame.
+        warmup: baseline 학습에 쓸 앞쪽 구간 길이 (샘플 수).
+
+    Returns:
+        bool. 난이도가 목표 범위 안이면 True.
+    """
+    kpi_cols = [c for c in df.columns if c not in ("ts", "label", "scenario")]
+    train, ev = df.iloc[:warmup], df.iloc[warmup:]
+
+    flag = np.zeros(len(ev), dtype=bool)
+    for c in kpi_cols:
+        mu, sd = train[c].mean(), train[c].std()
+        flag |= (np.abs((ev[c] - mu) / sd) > 3).to_numpy()
+
+    pred, lab = flag.astype(int), ev.label.to_numpy()
+    tp = int(((pred == 1) & (lab == 1)).sum())
+    fp = int(((pred == 1) & (lab == 0)).sum())
+    fn = int(((pred == 0) & (lab == 1)).sum())
+    prec = tp / (tp + fp) if tp + fp else 0.0
+    rec = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
+
+    print("\n[4] 난이도 (전역 z-score, 지속성 규칙 없음)")
+    print(f"  TP {tp} / FP {fp} / FN {fn}")
+    print(f"  precision {prec:.3f}  recall {rec:.3f}  F1 {f1:.3f}")
+
+    ok = 0.20 <= f1 <= 0.75
+    verdict = "PASS"
+    if f1 > 0.75:
+        verdict = "FAIL (너무 쉬움. 개선 효과를 보일 수 없음)"
+    elif f1 < 0.20:
+        verdict = "FAIL (너무 어려움. 강도를 올릴 것)"
+    print(f"  판정            : {verdict}")
+    return ok
 
 
 def main():
@@ -151,14 +199,16 @@ def main():
     print(f"이상 비율 {df.label.mean() * 100:.2f}%  "
           f"이벤트 {len(events)}건  정상 구간 {len(normal):,} samples")
 
+    check_clipping(df, kpi_cfg)
+
     results = [
         check_warmup(df, events, warmup),
         check_magnitude_order(df, events, kpi_cfg, normal),
         check_load_quality_split(
             df, events, kpi_cfg, normal, scen_yaml["scenarios"]
         ),
+        check_difficulty(df, warmup),
     ]
-    check_clipping(df, kpi_cfg)
 
     print("\n" + "=" * 46)
     print("전체 판정:", "PASS" if all(results) else "FAIL")
