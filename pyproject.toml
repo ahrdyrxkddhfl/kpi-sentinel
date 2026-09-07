@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kpi-sentinel"
+version = "0.1.0"
+description = "실시간 KPI 이상징후 탐지 파이프라인"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+storage = ["duckdb"]
+plot = ["matplotlib"]
+stream = ["confluent-kafka"]
+report = ["anthropic", "python-dotenv"]
+
+[tool.setuptools.packages.find]
+include = ["sentinel*"]
