@@ -23,3 +23,8 @@ multi_entity:
   id_column: "cell_id"     # 파티션 키로 쓸 컬럼
   id_prefix: "cell-"
   path: "data/raw/kpi_cells.csv"
+  topic: "kpi-cells"       # 단일 시계열 토픽(kpi-raw)과 분리한다
+  partitions: 4
+  # librdkafka 기본값(consistent_random, CRC32) 대신 Java 클라이언트와 같은
+  # murmur2를 쓴다. 다른 언어의 프로듀서가 붙어도 같은 키가 같은 파티션으로 간다.
+  partitioner: "murmur2_random"

@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 
-def replay_csv(path, kpi_names):
+def replay_csv(path, kpi_names, key_column=None):
     """CSV를 한 행씩 dict로 내놓는다.
 
     브로커를 쓰지 않을 때의 대체 소스다.
@@ -17,6 +17,7 @@ def replay_csv(path, kpi_names):
     Args:
         path: CSV 경로.
         kpi_names: 숫자로 변환할 컬럼 이름 목록.
+        key_column: 문자열 그대로 담을 개체 식별자 컬럼. None이면 넣지 않는다.
 
     Yields:
         {"ts": str, <kpi>: float, "label": int, "scenario": str} 형태의 dict.
@@ -27,6 +28,8 @@ def replay_csv(path, kpi_names):
         for row in csv.DictReader(f):
             rec = {"ts": row["ts"], "label": int(row["label"]),
                    "scenario": row["scenario"]}
+            if key_column is not None:
+                rec[key_column] = row[key_column]
             for k in kpi_names:
                 rec[k] = float(row[k])
             yield rec
