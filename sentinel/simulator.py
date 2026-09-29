@@ -239,3 +239,45 @@ def simulate(kpi_yaml, scen_yaml):
     df["label"] = label
     df["scenario"] = scenario_col
     return df, events
+
+def simulate_entities(kpi_yaml, scen_yaml, n_entities, id_column="entity_id",
+                      id_prefix="e"):
+    """여러 개체의 시계열을 독립적으로 생성해 하나로 합친다.
+
+    개체마다 seed만 바꿔 simulate를 그대로 호출한다. 0번 개체는 원래 seed를
+    쓰므로 simulate 단독 실행 결과와 값이 완전히 같다. 기존 탐지 실험의
+    재현성을 깨지 않기 위한 설계다.
+
+    결과는 시각 순으로 정렬하고, 같은 시각 안에서는 개체 순으로 둔다.
+    실제 스트림처럼 여러 개체의 레코드가 섞여 도착하는 상황을 흉내 낸다.
+
+    Args:
+        kpi_yaml: kpi.yaml을 파싱한 dict.
+        scen_yaml: scenarios.yaml을 파싱한 dict. seed 키가 있어야 한다.
+        n_entities: 생성할 개체 수.
+        id_column: 개체 식별자를 담을 컬럼 이름.
+        id_prefix: 개체 식별자 앞에 붙일 문자열.
+
+    Returns:
+        (df, events) 튜플.
+        df는 simulate의 컬럼에 id_column이 추가된 DataFrame이다.
+        events는 개체 식별자 -> AnomalyEvent 목록 매핑이다.
+
+    Raises:
+        ValueError: n_entities가 1보다 작을 때.
+    """
+    if n_entities < 1:
+        raise ValueError(f"n_entities는 1 이상이어야 한다: {n_entities}")
+
+    frames, events = [], {}
+    base_seed = scen_yaml["seed"]
+    for i in range(n_entities):
+        df, ev = simulate(kpi_yaml, {**scen_yaml, "seed": base_seed + i})
+        eid = f"{id_prefix}{i:03d}"
+        df.insert(1, id_column, eid)
+        frames.append(df)
+        events[eid] = ev
+
+    out = pd.concat(frames, ignore_index=True)
+    out = out.sort_values(["ts", id_column], kind="stable")
+    return out.reset_index(drop=True), events

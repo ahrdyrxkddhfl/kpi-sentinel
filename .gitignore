@@ -8,3 +8,5 @@ data/
 .DS_Store
 .ipynb_checkpoints/
 
+.vibecheck/
+WHYD_REPORT.md

@@ -15,3 +15,11 @@ replay_delay_sec: 0
 
 # 탐지 단계가 읽을 윈도우 집계 결과. batch 또는 stream.
 windowed_source: batch
+
+# 스트림 신뢰성 실험용 다중 개체 데이터.
+# 탐지 성능 실험(run_simulate.py)과 별개의 파일로 만들며 그 결과에 영향을 주지 않는다.
+multi_entity:
+  count: 8
+  id_column: "cell_id"     # 파티션 키로 쓸 컬럼
+  id_prefix: "cell-"
+  path: "data/raw/kpi_cells.csv"
