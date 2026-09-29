@@ -17,6 +17,7 @@ dependencies = [
 storage = ["duckdb"]
 plot = ["matplotlib"]
 stream = ["confluent-kafka"]
+sink = ["psycopg[binary]"]
 report = ["anthropic", "python-dotenv"]
 
 [tool.setuptools.packages.find]

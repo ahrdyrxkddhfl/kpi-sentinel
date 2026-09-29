@@ -107,3 +107,47 @@ def aggregate_frame(df, size, stride, keys, agg="mean"):
         if out is not None:
             rows.append(out)
     return pd.DataFrame(rows)
+
+class KeyedSlidingWindow:
+    """키마다 독립된 SlidingWindow를 유지한다.
+
+    파티션 하나에는 여러 키의 레코드가 섞여 들어온다. 윈도우를 하나만 두면
+    서로 다른 개체의 값이 한 윈도우 안에서 평균되므로, 키별로 따로 둔다.
+    윈도우는 해당 키의 첫 레코드가 도착할 때 만든다.
+
+    Attributes:
+        key_column: 레코드에서 키를 꺼낼 컬럼 이름.
+    """
+
+    def __init__(self, key_column, size, stride, keys, agg="mean"):
+        """키별 윈도우 묶음을 초기화한다.
+
+        Args:
+            key_column: 개체 식별자 컬럼 이름.
+            size: 윈도우 크기 (레코드 수).
+            stride: 몇 건마다 집계값을 낼지 정한다.
+            keys: 집계할 수치 컬럼 이름 목록.
+            agg: mean, max, p95 중 하나.
+        """
+        self.key_column = key_column
+        self._args = (size, stride, keys, agg)
+        self._windows = {}
+
+    def push(self, record):
+        """레코드를 해당 키의 윈도우에 넣고, 집계 시점이면 결과를 돌려준다.
+
+        Args:
+            record: key_column, ts, 수치 컬럼을 담은 dict.
+
+        Returns:
+            집계 결과 dict 또는 None. 결과에는 key_column이 포함된다.
+        """
+        key = record[self.key_column]
+        win = self._windows.get(key)
+        if win is None:
+            win = SlidingWindow(*self._args)
+            self._windows[key] = win
+        out = win.push(record)
+        if out is not None:
+            out[self.key_column] = key
+        return out

@@ -8,3 +8,12 @@ duckdb:
 tables:
   metrics: "metrics"      # 윈도우 집계된 KPI 시계열
   alerts: "alerts"        # 알람 판정 결과
+
+
+# 스트림 경로의 적재 대상. 컨슈머 여러 개가 동시에 써야 해서 DuckDB가 아니라
+# PostgreSQL을 쓴다. 로컬 실험용 계정이다.
+# 호스트 포트를 5433으로 둔 것은 로컬에 이미 설치된 PostgreSQL(5432)과
+# 충돌하지 않게 하기 위해서다.
+postgres:
+  dsn: "postgresql://sentinel:sentinel@localhost:5433/sentinel"
+  table: "metrics_stream"
