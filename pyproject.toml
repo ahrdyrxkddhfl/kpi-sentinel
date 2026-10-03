@@ -17,8 +17,12 @@ dependencies = [
 storage = ["duckdb"]
 plot = ["matplotlib"]
 stream = ["confluent-kafka"]
-sink = ["psycopg[binary]"]
+sink = ["psycopg[binary]", "python-dotenv"]
 report = ["anthropic", "python-dotenv"]
+dev = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["sentinel*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

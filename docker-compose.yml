@@ -26,7 +26,7 @@ services:
     container_name: kpi-sentinel-postgres
     environment:
       POSTGRES_USER: sentinel
-      POSTGRES_PASSWORD: sentinel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?.env에 POSTGRES_PASSWORD를 설정할 것}
       POSTGRES_DB: sentinel
     ports:
       - "5433:5432"

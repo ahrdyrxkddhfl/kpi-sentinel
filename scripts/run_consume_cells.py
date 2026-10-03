@@ -308,6 +308,27 @@ def kafka_batches(consumer, assigned, batch_size, idle_timeout, startup_timeout)
             yield batch
 
 
+def load_pg_password():
+    """.env에서 PostgreSQL 비밀번호를 읽는다.
+
+    모듈을 불러올 때가 아니라 실행할 때 읽는다. 비밀번호가 필요 없는
+    함수만 가져다 쓰는 경우에 .env가 없어도 실패하지 않게 하기 위해서다.
+
+    Returns:
+        비밀번호 문자열.
+
+    Raises:
+        SystemExit: POSTGRES_PASSWORD가 설정되지 않았을 때.
+    """
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT / ".env")
+    password = os.environ.get("POSTGRES_PASSWORD")
+    if not password:
+        raise SystemExit("POSTGRES_PASSWORD가 없다. .env 파일에 설정할 것.")
+    return password
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--reset", action="store_true",
@@ -326,6 +347,7 @@ def main():
     stream_cfg = yaml.safe_load((ROOT / "config/stream.yaml").read_text())
     det_yaml = yaml.safe_load((ROOT / "config/detector.yaml").read_text())
     pg = yaml.safe_load((ROOT / "config/storage.yaml").read_text())["postgres"]
+    pg_password = load_pg_password()
     kpi_names = list(kpi_yaml["kpis"])
     me = stream_cfg["multi_entity"]
     key_col = me["id_column"]
@@ -362,7 +384,8 @@ def main():
         os._exit(CRASH_EXIT_CODE)
     print(f"커밋 전략: {strategy_name}  그룹: {group_id}")
 
-    with PostgresSink(pg["dsn"], pg["table"], key_col, kpi_names) as sink:
+    with PostgresSink(pg["dsn"], pg["table"], key_col, kpi_names,
+                      password=pg_password) as sink:
         if args.reset:
             sink.truncate()
             print(f"테이블 초기화: {pg['table']}")

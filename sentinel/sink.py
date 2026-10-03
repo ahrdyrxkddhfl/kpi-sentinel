@@ -29,19 +29,21 @@ class PostgresSink:
         value_columns: 수치 컬럼 이름 목록.
     """
 
-    def __init__(self, dsn, table, key_column, value_columns):
+    def __init__(self, dsn, table, key_column, value_columns, password=None):
         """연결을 열고 테이블이 없으면 만든다.
 
         Args:
-            dsn: PostgreSQL 접속 문자열.
+            dsn: 비밀번호를 뺀 PostgreSQL 접속 문자열.
             table: 테이블 이름.
             key_column: 개체 식별자 컬럼 이름. 기본키의 첫 번째 컬럼이 된다.
             value_columns: 수치 컬럼 이름 목록.
+            password: 접속 비밀번호. 설정 파일에 두지 않고 호출하는 쪽이
+                환경변수에서 읽어 넘긴다. None이면 접속 문자열만 쓴다.
         """
         self.table = table
         self.key_column = key_column
         self.value_columns = list(value_columns)
-        self.conn = psycopg.connect(dsn, autocommit=True)
+        self.conn = psycopg.connect(dsn, password=password, autocommit=True)
         self._ensure_table()
         self._insert_sql = self._build_insert()
 
@@ -141,4 +143,9 @@ class PostgresSink:
     def truncate(self):
         """테이블을 비운다. 실험을 처음부터 다시 할 때 쓴다."""
         self.conn.execute(sql.SQL("TRUNCATE {}").format(
+            sql.Identifier(self.table)))
+
+    def drop(self):
+        """테이블을 지운다. 테스트가 끝난 뒤 정리할 때 쓴다."""
+        self.conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(
             sql.Identifier(self.table)))
