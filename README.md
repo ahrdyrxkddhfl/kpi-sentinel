@@ -84,7 +84,7 @@ kpi-sentinel/
 │  └─ plotting.py     #   시각화
 │
 ├─ scripts/           # 실행 진입점
-├─ tests/             # 멱등 적재 테스트
+├─ tests/             # 멱등 적재, 리밸런스 테스트
 ├─ docs/              # 실험 결과와 그림
 └─ docker-compose.yml # Redpanda, PostgreSQL
 ```
@@ -171,7 +171,29 @@ python scripts/run_simulate_cells.py         # 셀 8개 데이터 생성
 python scripts/run_produce_cells.py          # 셀 ID를 키로 파티션 4개에 전송
 python scripts/run_consume_cells.py --reset  # 셀별 윈도우 집계 후 PostgreSQL 적재
 python scripts/run_crash_experiment.py       # 커밋 전략별 강제 종료 실험
-python -m pytest -v                          # 멱등 적재 테스트
+python scripts/check_stream_values.py        # 적재 결과를 셀별 배치 집계와 값까지 비교
+python -m pytest -v                          # 멱등 적재·리밸런스 테스트
+```
+
+리밸런스 실험은 터미널 두 개로 한다. 처리 도중에 리밸런스가 일어나도록 배치마다 잠깐 쉬게 한다.
+
+```bash
+# 터미널 1
+python scripts/run_consume_cells.py --reset --group rebal --sleep-per-batch 0.05
+# 터미널 2 (5초 뒤): 30,000건 처리 후 강제 종료
+python scripts/run_consume_cells.py --group rebal --crash-after 30000 --sleep-per-batch 0.05
+# 터미널 1이 끝난 뒤
+python scripts/check_stream_values.py
+```
+
+처리 지연은 프로듀서와 컨슈머를 동시에 돌려서 잰다. 미리 쌓아 둔 토픽을 읽으면 토픽에 머문 시간까지 지연에 섞이므로 토픽을 지우고 새로 보낸다. 원본은 `data/raw/kpi_cells.csv`에 그대로 있다.
+
+```bash
+docker exec kpi-sentinel-redpanda rpk topic delete kpi-cells
+# 터미널 1: 초당 2,000건으로 전송 (약 2분)
+python scripts/run_produce_cells.py --rate 2000
+# 터미널 2: 토픽 생성 직후
+python scripts/run_consume_cells.py --reset --group live
 ```
 
 `run_produce_cells.py`는 끝에 파티션별 건수를, `run_consume_cells.py`는 셀별 기대 건수와 적재 건수를 출력한다. 강제 종료 실험 결과는 `docs/crash_experiment.md`에 남는다.
@@ -226,6 +248,16 @@ python scripts/run_sparsity.py    # 장애 밀도별 거동
 
 마지막 전략은 재시작할 때 윈도우를 다시 채울 만큼 앞에서부터 읽는다(`sentinel/checkpoint.py`). 그만큼 같은 결과가 다시 만들어지지만, 적재 테이블의 기본키가 (셀 ID, ts)라서 이미 있는 행은 건너뛴다. 커밋을 늦춰 유실을 막고, 그 대가로 생기는 중복은 멱등 적재로 막는 구조다. `tests/test_sink.py`가 이 성질을 확인한다. 전체 표는 [docs/crash_experiment.md](docs/crash_experiment.md)에 있다.
 
+컨슈머가 둘 이상이면 리밸런스 때 파티션이 다른 컨슈머로 넘어간다. 처음에는 넘겨준 파티션의 옛 재시작 위치가 추적기에 남아, 새 담당 컨슈머가 옮겨 둔 커밋 위치를 계속 뒤로 되돌렸다. 컨슈머 2개 중 하나를 30,000건 처리 후 죽이는 실험에서 남은 컨슈머가 그 몫을 통째로 다시 처리했다(중복 무시 29,524건). 파티션을 내놓을 때 그 파티션의 안전한 위치를 마지막으로 커밋하고, 추적기 기록과 윈도우 버퍼를 지우도록 고친 뒤에는 중복 무시가 0건이 되었다. 두 경우 모두 적재 결과는 셀별 배치 집계와 건수·값까지 일치했다(`scripts/check_stream_values.py`). [docs/rebalance_experiment.md](docs/rebalance_experiment.md) 참조.
+
+처리 지연은 `적재 시각 − 프로듀서가 보낸 시각`으로 잰다. 레코드의 `ts`는 시뮬레이터가 만든 과거 날짜라 적재 시각과 빼면 몇 주짜리 값이 나오므로 기준으로 쓸 수 없다. 보낸 시각은 Kafka가 메시지마다 붙이는 CreateTime을 그대로 쓰고, 윈도우를 완성시킨 레코드의 값을 결과 행에 함께 저장한다. 초당 2,000건으로 보내면서 동시에 읽었을 때 241,888건의 지연은 다음과 같았다.
+
+| p50 | p95 | 최대 |
+|---:|---:|---:|
+| 163ms | 490ms | 6,360ms |
+
+최대값은 컨슈머가 그룹에 들어가 파티션을 받기까지 몇 초 동안 쌓인 첫 레코드들에서 나온다.
+
 셀 ID를 키로 쓰면 한 셀의 레코드가 항상 같은 파티션으로 가서 셀 안의 순서가 지켜진다. 다만 키가 8개뿐이라 파티션 4개에 고르게 나뉘지 않는다(0/3/4/1). 계산 결과와 실제 전송 결과가 같았고, 지금 규모에서는 영향이 없어 조치는 보류했다. [docs/partition-skew.md](docs/partition-skew.md) 참조.
 
 ### 시뮬레이터도 검증 대상
@@ -249,7 +281,8 @@ python scripts/run_sparsity.py    # 장애 밀도별 거동
 - 실제 망의 장애 발생 빈도를 참조할 데이터가 없어 맞추지 못했다. 대신 밀도를 3배 이상 변화시켜도 성능이 유지되는지 확인했다.
 - 오탐 감소율은 장애 밀도에 따라 69% ~ 89%로 변한다. 단일 수치가 아니라 범위로 보아야 한다.
 - 파라미터 조정과 반복 측정에 같은 시뮬레이터를 사용했다. 시뮬레이터의 가정이 틀렸다면 반복 측정으로도 드러나지 않는다.
-- 스트림 신뢰성 실험은 컨슈머 1개로 했다. 컨슈머 여러 개가 파티션을 나눠 가질 때의 리밸런스는 아직 검증하지 않았다.
+- 리밸런스 실험은 컨슈머 2개, 강제 종료 시점 1개로 했다. 컨슈머 수와 종료 시점을 바꿔 가며 반복하지는 않았다.
+- 처리 지연은 브로커·DB·컨슈머가 모두 한 노트북에서 도는 환경에서 한 번 잰 값이다. 네트워크를 거치는 실제 배포 환경의 지연을 대표하지 않는다.
 - 다중 셀 스트림의 적재 결과는 아직 탐지 단계로 이어지지 않는다. 탐지 성능 수치는 단일 시계열 데이터 기준이다.
 
 ---
