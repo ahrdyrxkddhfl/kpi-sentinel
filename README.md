@@ -13,6 +13,8 @@
 
 seed 7개 반복 측정. 비교 기준선은 전역 z-score, 제안 방식은 요일×시간대 baseline + EWMA + 지속성 규칙. 상세 실험 결과는 [docs/results.md](docs/results.md) 참조.
 
+스트림 경로는 셀 8개의 데이터를 셀 ID를 키로 파티션 4개에 나눠 받는다. 컨슈머를 처리 도중 강제로 종료했다가 다시 띄워도 유실과 중복 없이 적재되는지 커밋 전략별로 실험했다. [스트림 신뢰성](#컨슈머가-죽어도-결과가-틀어지지-않게) 참조.
+
 ---
 
 ## 무엇을 해결하는가
@@ -48,6 +50,14 @@ seed 7개 반복 측정. 비교 기준선은 전역 z-score, 제안 방식은 �
 
 윈도우 집계는 배치와 스트림 두 경로로 실행할 수 있으며, 같은 구현을 공유하므로 결과가 일치한다. 탐지 이후 결과가 두 경로에서 동일함을 확인했다. 브로커를 파일 재생으로 교체해도 하위 단계는 변경되지 않는다.
 
+스트림 신뢰성 실험은 위와 별도의 경로로 돈다. 탐지 성능 실험의 데이터(`data/raw/kpi.csv`)는 건드리지 않는다.
+
+```
+다중 셀 시뮬레이터 → 토픽 kpi-cells (파티션 4, 키 = 셀 ID)
+                  → 컨슈머 (셀별 윈도우 집계, 커밋 전략 선택)
+                  → PostgreSQL metrics_stream (기본키 (셀 ID, ts), 멱등 적재)
+```
+
 ### 디렉토리
 
 ```
@@ -57,14 +67,16 @@ kpi-sentinel/
 │  ├─ scenarios.yaml  #   이상 시나리오 5종: 강도, 지속시간, 발생 횟수
 │  ├─ detector.yaml   #   윈도우 크기, z 임계값, EWMA 계수, 지속성
 │  ├─ stream.yaml     #   브로커 접속, 입력 경로 선택
-│  ├─ storage.yaml    #   DuckDB 경로와 테이블 이름
+│  ├─ storage.yaml    #   DuckDB 경로, PostgreSQL 접속 정보(비밀번호 제외)
 │  ├─ report.yaml     #   모델 이름, 도메인 지식
 │  └─ plot.yaml       #   시각화 대상과 크기
 │
 ├─ sentinel/          # 도메인 비의존. KPI의 의미를 알지 못한다
 │  ├─ simulator.py    #   계절성 생성, 이상 주입, 라벨링
 │  ├─ stream.py       #   스트림 소스 추상
-│  ├─ windowing.py    #   슬라이딩 윈도우 집계
+│  ├─ windowing.py    #   슬라이딩 윈도우 집계 (단일, 키별)
+│  ├─ checkpoint.py   #   윈도우 버퍼를 복구할 수 있는 재시작 위치 추적
+│  ├─ sink.py         #   PostgreSQL 멱등 적재
 │  ├─ detector.py     #   baseline z-score, EWMA, 지속성 규칙
 │  ├─ evaluate.py     #   event-wise 평가
 │  ├─ storage.py      #   DuckDB 적재와 조회
@@ -72,8 +84,9 @@ kpi-sentinel/
 │  └─ plotting.py     #   시각화
 │
 ├─ scripts/           # 실행 진입점
+├─ tests/             # 멱등 적재 테스트
 ├─ docs/              # 실험 결과와 그림
-└─ docker-compose.yml # Redpanda
+└─ docker-compose.yml # Redpanda, PostgreSQL
 ```
 
 `sentinel/` 아래에는 도메인 용어가 등장하지 않는다. RSRP, SINR 같은 지표 이름과 그 의미는 전부 `config/`에 있다. 다른 도메인에 적용하려면 `config/`의 YAML만 교체하면 된다.
@@ -109,10 +122,12 @@ grep -rniE "통신|네트워크|RSRP|SINR|RTT|PRB" sentinel/   # 결과 없음
 python3 -m venv .venv
 source .venv/bin/activate
 pip install pandas numpy matplotlib pyyaml duckdb anthropic \
-            python-dotenv confluent-kafka
+            python-dotenv confluent-kafka "psycopg[binary]" pytest
 
-cp .env.example .env      # ANTHROPIC_API_KEY 입력 (리포트 생성 시에만 필요)
+cp .env.example .env
 ```
+
+`.env`에는 두 값을 둔다. `ANTHROPIC_API_KEY`는 리포트를 만들 때만, `POSTGRES_PASSWORD`는 docker compose와 스트림 신뢰성 실험에서 쓴다. 비밀번호는 설정 파일에 두지 않는다.
 
 ### 배치 경로 (브로커 불필요)
 
@@ -147,6 +162,26 @@ docker exec -it kpi-sentinel-redpanda rpk topic create kpi-raw -p 1 -r 1
 docker exec -it kpi-sentinel-redpanda rpk group delete kpi-sentinel
 ```
 
+### 스트림 신뢰성 실험
+
+```bash
+docker compose up -d --wait                  # Redpanda, PostgreSQL
+
+python scripts/run_simulate_cells.py         # 셀 8개 데이터 생성
+python scripts/run_produce_cells.py          # 셀 ID를 키로 파티션 4개에 전송
+python scripts/run_consume_cells.py --reset  # 셀별 윈도우 집계 후 PostgreSQL 적재
+python scripts/run_crash_experiment.py       # 커밋 전략별 강제 종료 실험
+python -m pytest -v                          # 멱등 적재 테스트
+```
+
+`run_produce_cells.py`는 끝에 파티션별 건수를, `run_consume_cells.py`는 셀별 기대 건수와 적재 건수를 출력한다. 강제 종료 실험 결과는 `docs/crash_experiment.md`에 남는다.
+
+컨슈머 그룹은 읽은 위치를 브로커에 저장한다. 같은 그룹으로 처음부터 다시 읽으려면 그룹을 지운다.
+
+```bash
+docker exec kpi-sentinel-redpanda rpk group delete kpi-sentinel-cells
+```
+
 ### 실험
 
 ```bash
@@ -179,6 +214,20 @@ python scripts/run_sparsity.py    # 장애 밀도별 거동
 
 `z_threshold=4.0`이 F1은 더 높았으나 근거가 이 데이터셋 하나뿐이다. 3.0은 3σ라는 통계적 관례가 뒷받침한다. `persistence`는 recall이 무너지는 경계에서 두 칸 아래 값을 택했다.
 
+### 컨슈머가 죽어도 결과가 틀어지지 않게
+
+스트림 컨슈머는 윈도우를 채우는 중인 레코드를 메모리에 들고 있다. 그래서 오프셋을 언제 커밋하느냐에 따라, 죽었다 살아났을 때 사라지는 결과가 달라진다. 원본 241,920건 중 100,000번째 레코드에서 컨슈머를 정리 코드 없이 종료하고, 같은 그룹으로 다시 띄워 끝까지 처리했다.
+
+| 커밋 전략 | 유실 (적재 전 종료) | 유실 (적재 후 커밋 전 종료) |
+|---|---:|---:|
+| 읽자마자 커밋 | 528 | 28 |
+| 적재 후 마지막으로 읽은 위치 커밋 | 28 | 16 |
+| 적재 후 윈도우를 복구할 수 있는 위치까지만 커밋 | **0** | **0** |
+
+마지막 전략은 재시작할 때 윈도우를 다시 채울 만큼 앞에서부터 읽는다(`sentinel/checkpoint.py`). 그만큼 같은 결과가 다시 만들어지지만, 적재 테이블의 기본키가 (셀 ID, ts)라서 이미 있는 행은 건너뛴다. 커밋을 늦춰 유실을 막고, 그 대가로 생기는 중복은 멱등 적재로 막는 구조다. `tests/test_sink.py`가 이 성질을 확인한다. 전체 표는 [docs/crash_experiment.md](docs/crash_experiment.md)에 있다.
+
+셀 ID를 키로 쓰면 한 셀의 레코드가 항상 같은 파티션으로 가서 셀 안의 순서가 지켜진다. 다만 키가 8개뿐이라 파티션 4개에 고르게 나뉘지 않는다(0/3/4/1). 계산 결과와 실제 전송 결과가 같았고, 지금 규모에서는 영향이 없어 조치는 보류했다. [docs/partition-skew.md](docs/partition-skew.md) 참조.
+
 ### 시뮬레이터도 검증 대상
 
 자체 생성 데이터를 쓰므로 데이터 자체가 의도대로인지 확인해야 한다. `scripts/validate_simulator.py`가 네 가지를 판정한다.
@@ -200,6 +249,8 @@ python scripts/run_sparsity.py    # 장애 밀도별 거동
 - 실제 망의 장애 발생 빈도를 참조할 데이터가 없어 맞추지 못했다. 대신 밀도를 3배 이상 변화시켜도 성능이 유지되는지 확인했다.
 - 오탐 감소율은 장애 밀도에 따라 69% ~ 89%로 변한다. 단일 수치가 아니라 범위로 보아야 한다.
 - 파라미터 조정과 반복 측정에 같은 시뮬레이터를 사용했다. 시뮬레이터의 가정이 틀렸다면 반복 측정으로도 드러나지 않는다.
+- 스트림 신뢰성 실험은 컨슈머 1개로 했다. 컨슈머 여러 개가 파티션을 나눠 가질 때의 리밸런스는 아직 검증하지 않았다.
+- 다중 셀 스트림의 적재 결과는 아직 탐지 단계로 이어지지 않는다. 탐지 성능 수치는 단일 시계열 데이터 기준이다.
 
 ---
 
@@ -210,5 +261,7 @@ python scripts/run_sparsity.py    # 장애 밀도별 거동
 | Python | 전체 파이프라인 |
 | Redpanda | 스트림 수집. Kafka API 호환 브로커 |
 | DuckDB | 알람 이력 저장과 조회 |
+| PostgreSQL | 스트림 신뢰성 실험의 적재 대상. 컨슈머 여러 개의 동시 쓰기를 고려 |
+| pytest | 멱등 적재 테스트 |
 | matplotlib | 탐지 결과 시각화 |
 | Anthropic API | 장애 리포트 서술 (Claude Haiku) |
