@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STRATEGIES = ("auto", "before_write", "after_write", "window_safe")
 CRASH_STAGES = ("pre_write", "pre_commit")
 CRASH_EXIT_CODE = 3
+LATENCY_PERCENTILES = (0.5, 0.95)
 
 
 def slowed(batches, seconds):
@@ -240,6 +241,8 @@ def process(batches, windows, sink, strategy, crash_after=None,
             strategy.after_push(partition, offset, rec[windows.key_column],
                                 row is not None)
             if row is not None:
+                # 이 윈도우를 완성시킨 레코드가 전송된 시각. 처리 지연의 기준이다.
+                row["produced_at"] = rec.get("produced_at")
                 out.append(row)
             if crash_stage == "pre_write" and reached():
                 crash(stats)
@@ -347,6 +350,8 @@ def kafka_batches(consumer, assigned, batch_size, idle_timeout, startup_timeout)
     Yields:
         (partition, offset, record) 튜플 목록.
     """
+    from confluent_kafka import TIMESTAMP_NOT_AVAILABLE
+
     idle, waited = 0, 0
     while True:
         msgs = consumer.consume(num_messages=batch_size, timeout=1.0)
@@ -367,7 +372,11 @@ def kafka_batches(consumer, assigned, batch_size, idle_timeout, startup_timeout)
             if m.error():
                 print("error:", m.error())
                 continue
-            batch.append((m.partition(), m.offset(), decode(m.value())))
+            rec = decode(m.value())
+            ts_type, ts_ms = m.timestamp()
+            if ts_type != TIMESTAMP_NOT_AVAILABLE:
+                rec["produced_at"] = ts_ms   # 프로듀서가 보낸 시각 (CreateTime, ms)
+            batch.append((m.partition(), m.offset(), rec))
         if batch:
             yield batch
 
@@ -485,16 +494,23 @@ def main():
         finally:
             consumer.close()
         stored = sink.count_by_key()
+        latency = sink.latency_ms(LATENCY_PERCENTILES)
 
     expected = expected_by_key(ROOT / me["path"], key_col, size, stride)
     stats["stored_total"] = sum(stored.values())
     stats["expected_total"] = sum(expected.values())
+    stats["latency_ms"] = {str(k): v for k, v in latency.items()}
     if args.stats_out:
         Path(args.stats_out).write_text(json.dumps(stats))
 
     print(f"수신 {stats['received']:,}건 -> 윈도우 결과 {stats['emitted']:,}건")
     print(f"  적재 {stats['inserted']:,}건, 중복 무시 {stats['ignored']:,}건")
     print(f"  파티션 반납·유실 처리 {rebalance['released']}회")
+    if latency["n"]:
+        p50, p95 = (latency[p] for p in LATENCY_PERCENTILES)
+        print(f"  처리 지연(전송->적재) p50 {p50:,.0f}ms  p95 {p95:,.0f}ms  "
+              f"최대 {latency['max']:,.0f}ms  ({latency['n']:,}건)")
+        print("  (프로듀서와 동시에 돌린 실행에서만 의미가 있다)")
     print(f"\n셀별 정합성 (테이블 {pg['table']}):")
     ok = True
     for key in sorted(expected):

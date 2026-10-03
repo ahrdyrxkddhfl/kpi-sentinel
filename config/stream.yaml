@@ -29,6 +29,10 @@ multi_entity:
   # murmur2를 쓴다. 다른 언어의 프로듀서가 붙어도 같은 키가 같은 파티션으로 간다.
   partitioner: "murmur2_random"
   group_id: "kpi-sentinel-cells"
+  # 초당 전송 건수. 0이면 제한 없이 최대 속도로 보낸다.
+  # 처리 지연을 잴 때는 컨슈머가 따라갈 수 있는 속도로 둔다. 너무 크면 토픽에
+  # 쌓이는 대기 시간이 지연에 섞이고, 너무 작으면 실험이 오래 걸린다.
+  produce_rate: 0
   batch_size: 500          # 한 번에 읽고 적재하는 최대 메시지 수
   idle_timeout_sec: 10     # 할당 후 이 시간 동안 새 메시지가 없으면 컨슈머를 종료한다
   startup_timeout_sec: 60  # 파티션 할당을 기다리는 최대 시간

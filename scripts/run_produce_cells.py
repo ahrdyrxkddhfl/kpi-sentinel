@@ -8,7 +8,9 @@
 한 셀이 두 파티션에 나뉘어 들어갔다면 순서 보장이 깨진 것이다.
 """
 
+import argparse
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -56,7 +58,27 @@ def ensure_topic(bootstrap, topic, partitions):
     return True
 
 
+def pace(sent, started, rate):
+    """초당 rate건을 넘지 않도록 필요한 만큼 기다린다.
+
+    Args:
+        sent: 지금까지 보낸 건수.
+        started: 전송을 시작한 시각 (time.monotonic 값).
+        rate: 초당 최대 전송 건수. 0 이하면 기다리지 않는다.
+    """
+    if rate <= 0:
+        return
+    ahead = started + sent / rate - time.monotonic()
+    if ahead > 0:
+        time.sleep(ahead)
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--rate", type=float,
+                        help="초당 전송 건수. 생략하면 설정값(produce_rate)을 쓴다")
+    args = parser.parse_args()
+
     kpi_yaml = yaml.safe_load((ROOT / "config/kpi.yaml").read_text())
     stream_cfg = yaml.safe_load((ROOT / "config/stream.yaml").read_text())
     kpi_names = list(kpi_yaml["kpis"])
@@ -91,7 +113,11 @@ def main():
             return
         placed[msg.key().decode("utf-8")][msg.partition()] += 1
 
+    rate = args.rate if args.rate is not None else me.get("produce_rate", 0)
+    if rate > 0:
+        print(f"초당 {rate:,.0f}건으로 전송")
     sent = 0
+    started = time.monotonic()
     for rec in replay_csv(src, kpi_names, key_column=key_col):
         producer.produce(
             me["topic"],
@@ -100,6 +126,7 @@ def main():
             on_delivery=on_delivery,
         )
         sent += 1
+        pace(sent, started, rate)
         if sent % 5000 == 0:
             producer.poll(0)
             print(f"  sent {sent:,}")
