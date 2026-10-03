@@ -27,6 +27,7 @@ import csv
 import json
 import os
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -42,6 +43,21 @@ ROOT = Path(__file__).resolve().parents[1]
 STRATEGIES = ("auto", "before_write", "after_write", "window_safe")
 CRASH_STAGES = ("pre_write", "pre_commit")
 CRASH_EXIT_CODE = 3
+
+
+def slowed(batches, seconds):
+    """배치마다 잠깐 멈추며 그대로 내놓는다. 실험에서 처리 속도를 늦출 때 쓴다.
+
+    Args:
+        batches: 배치 반복자.
+        seconds: 배치마다 쉴 시간(초).
+
+    Yields:
+        받은 배치 그대로.
+    """
+    for batch in batches:
+        yield batch
+        time.sleep(seconds)
 
 
 def next_positions(batch):
@@ -75,12 +91,34 @@ class CommitStrategy:
             commit_fn: 파티션 -> 위치 dict를 받아 커밋하는 함수.
         """
         self.commit_fn = commit_fn
+        self._keys_of = {}          # 파티션 -> 그 파티션에서 본 키 집합
 
     def after_read(self, batch):
         """배치를 읽은 직후, 처리하기 전에 호출된다."""
 
     def after_push(self, partition, offset, key, emitted):
-        """레코드 하나를 윈도우에 넣은 직후 호출된다."""
+        """레코드 하나를 윈도우에 넣은 직후 호출된다.
+
+        어느 키가 어느 파티션에서 왔는지 기록해 둔다. 파티션을 반납할 때
+        그 키들의 윈도우 버퍼를 버리기 위해서다.
+        """
+        self._keys_of.setdefault(partition, set()).add(key)
+
+    def release(self, partitions, commit=True):
+        """파티션을 내놓을 때(리밸런스) 호출된다.
+
+        Args:
+            partitions: 내놓는 파티션 번호 목록.
+            commit: 내놓기 전에 커밋할지 여부. 그룹에서 이미 쫓겨난
+                경우(유실)에는 커밋이 거부되므로 False로 부른다.
+
+        Returns:
+            그 파티션들에 속한 키 집합. 호출한 쪽이 윈도우 버퍼를 버린다.
+        """
+        keys = set()
+        for p in partitions:
+            keys |= self._keys_of.pop(p, set())
+        return keys
 
     def after_write(self, batch):
         """배치의 윈도우 결과를 적재한 직후 호출된다."""
@@ -115,10 +153,23 @@ class CommitWindowSafe(CommitStrategy):
         self.tracker = ResumeTracker(size, stride)
 
     def after_push(self, partition, offset, key, emitted):
+        super().after_push(partition, offset, key, emitted)
         self.tracker.observe(partition, key, offset, emitted)
 
     def after_write(self, batch):
         self.commit_fn(self.tracker.safe_positions())
+
+    def release(self, partitions, commit=True):
+        """내놓는 파티션의 안전한 위치를 마지막으로 커밋하고 기록을 지운다.
+
+        기록을 지우지 않으면 이후 after_write가 넘겨준 파티션의 옛 위치까지
+        커밋해, 새 담당 컨슈머가 옮겨 둔 위치를 뒤로 되돌린다.
+        """
+        if commit:
+            safe = self.tracker.safe_positions()
+            self.commit_fn({p: safe[p] for p in partitions if p in safe})
+        self.tracker.forget(partitions)
+        return super().release(partitions, commit)
 
 
 def make_strategy(name, commit_fn, size, stride):
@@ -233,7 +284,8 @@ def expected_by_key(path, key_column, size, stride):
     return {k: expected_rows(n, size, stride) for k, n in counts.items()}
 
 
-def open_consumer(bootstrap, topic, group_id, auto_commit, session_timeout_ms):
+def open_consumer(bootstrap, topic, group_id, auto_commit, session_timeout_ms,
+                  on_release=None):
     """컨슈머를 만들고 구독한다.
 
     Args:
@@ -243,6 +295,8 @@ def open_consumer(bootstrap, topic, group_id, auto_commit, session_timeout_ms):
         auto_commit: 자동 커밋 사용 여부.
         session_timeout_ms: 이 시간 동안 하트비트가 없으면 그룹에서 제외된다.
             강제 종료된 컨슈머가 파티션을 오래 붙잡지 않도록 짧게 둔다.
+        on_release: 파티션을 내놓을 때 부를 함수. (파티션 번호 목록, 유실 여부)를
+            받는다. None이면 아무것도 하지 않는다.
 
     Returns:
         (consumer, assigned) 튜플. assigned는 파티션을 할당받았는지를
@@ -262,8 +316,18 @@ def open_consumer(bootstrap, topic, group_id, auto_commit, session_timeout_ms):
 
     def on_assign(_consumer, partitions):
         assigned["yes"] = bool(partitions)
+        print(f"  [할당] 파티션 {sorted(p.partition for p in partitions)}")
 
-    consumer.subscribe([topic], on_assign=on_assign)
+    def on_revoke(_consumer, partitions):
+        if on_release is not None:
+            on_release([p.partition for p in partitions], False)
+
+    def on_lost(_consumer, partitions):
+        if on_release is not None:
+            on_release([p.partition for p in partitions], True)
+
+    consumer.subscribe([topic], on_assign=on_assign, on_revoke=on_revoke,
+                       on_lost=on_lost)
     return consumer, assigned
 
 
@@ -341,6 +405,9 @@ def main():
     parser.add_argument("--crash-stage", choices=CRASH_STAGES,
                         default="pre_write", help="강제 종료 시점")
     parser.add_argument("--stats-out", help="처리 통계를 JSON으로 저장할 경로")
+    parser.add_argument("--sleep-per-batch", type=float, default=0.0,
+                        help="실험용. 배치마다 이 초만큼 쉰다. "
+                             "리밸런스를 처리 도중에 일으킬 때 쓴다")
     args = parser.parse_args()
 
     kpi_yaml = yaml.safe_load((ROOT / "config/kpi.yaml").read_text())
@@ -362,9 +429,26 @@ def main():
 
     from confluent_kafka import TopicPartition
 
+    rebalance = {"released": 0}
+
+    def on_release(partitions, lost):
+        """파티션을 내놓을 때 커밋하고, 그 파티션 셀들의 상태를 버린다.
+
+        Args:
+            partitions: 내놓는 파티션 번호 목록.
+            lost: 그룹에서 이미 쫓겨나 커밋할 수 없는 경우 True.
+        """
+        if not partitions:
+            return
+        keys = strategy.release(partitions, commit=not lost)
+        windows.drop(keys)
+        rebalance["released"] += 1
+        what = "유실" if lost else "반납"
+        print(f"  [{what}] 파티션 {sorted(partitions)}, 셀 {len(keys)}개 상태 정리")
+
     consumer, assigned = open_consumer(
         stream_cfg["kafka"]["bootstrap_servers"], me["topic"], group_id,
-        strategy_name == "auto", me["session_timeout_ms"],
+        strategy_name == "auto", me["session_timeout_ms"], on_release,
     )
 
     def commit(positions):
@@ -393,6 +477,8 @@ def main():
             batches = kafka_batches(consumer, assigned, me["batch_size"],
                                     me["idle_timeout_sec"],
                                     me["startup_timeout_sec"])
+            if args.sleep_per_batch:
+                batches = slowed(batches, args.sleep_per_batch)
             stats = process(batches, windows, sink, strategy,
                             crash_after=args.crash_after,
                             crash_stage=args.crash_stage, crash=crash)
@@ -408,6 +494,7 @@ def main():
 
     print(f"수신 {stats['received']:,}건 -> 윈도우 결과 {stats['emitted']:,}건")
     print(f"  적재 {stats['inserted']:,}건, 중복 무시 {stats['ignored']:,}건")
+    print(f"  파티션 반납·유실 처리 {rebalance['released']}회")
     print(f"\n셀별 정합성 (테이블 {pg['table']}):")
     ok = True
     for key in sorted(expected):

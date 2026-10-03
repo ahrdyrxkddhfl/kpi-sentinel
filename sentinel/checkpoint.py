@@ -69,6 +69,27 @@ class ResumeTracker:
             else:
                 self._resume[key] = position + 1
 
+    def forget(self, partitions):
+        """파티션을 반납할 때 그 파티션에 속한 키들의 기록을 지운다.
+
+        지우지 않으면 넘겨준 파티션의 옛 위치가 safe_positions에 계속 남아,
+        새 담당 컨슈머가 커밋한 위치를 이 컨슈머가 뒤로 되돌린다.
+
+        Args:
+            partitions: 반납하는 파티션 번호 목록.
+
+        Returns:
+            기록을 지운 키 집합.
+        """
+        removed = set()
+        for p in partitions:
+            keys = self._keys_of.pop(p, set())
+            for k in keys:
+                self._positions.pop(k, None)
+                self._resume.pop(k, None)
+            removed |= keys
+        return removed
+
     def safe_positions(self):
         """파티션별로 커밋해도 윈도우 상태를 복구할 수 있는 위치를 돌려준다.
 

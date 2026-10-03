@@ -151,3 +151,16 @@ class KeyedSlidingWindow:
         if out is not None:
             out[self.key_column] = key
         return out
+
+    def drop(self, keys):
+        """키들의 윈도우 버퍼를 버린다.
+
+        파티션을 반납할 때 쓴다. 버퍼를 남겨두면 나중에 그 파티션을 다시
+        받았을 때, 그사이 다른 컨슈머가 처리한 구간이 빠진 낡은 버퍼로
+        윈도우를 계산하게 된다.
+
+        Args:
+            keys: 버릴 키 목록. 없는 키는 무시한다.
+        """
+        for key in keys:
+            self._windows.pop(key, None)
